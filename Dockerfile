@@ -5,6 +5,9 @@
 
 FROM rust:1.90-slim-bookworm AS builder
 
+# openssl-sys (via reqwest/tokio-tungstenite) se lie à la libssl du système
+RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /usr/src/allumette_server/
 
 COPY README.md /usr/src/README.md
