@@ -3,7 +3,10 @@
 # to build, run `docker build -f Dockerfile` from root of the
 # repository
 
-FROM rust:1.86-slim-bullseye AS builder
+FROM rust:1.90-slim-bookworm AS builder
+
+# openssl-sys (via reqwest/tokio-tungstenite) se lie à la libssl du système
+RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /usr/src/allumette_server/
 
@@ -13,7 +16,7 @@ COPY ./src /usr/src/allumette_server/src
 
 RUN cargo build --release
 
-FROM debian:bullseye-slim
-RUN apt-get update && apt-get install -y libssl1.1 && rm -rf /var/lib/apt/lists/*
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y libssl3 && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /usr/src/allumette_server/target/release/allumette_server /usr/local/bin/allumette_server
 CMD ["allumette_server"]
