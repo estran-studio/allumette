@@ -1,5 +1,5 @@
-use futures_util::StreamExt;
 use allumette_server::helpers;
+use futures_util::StreamExt;
 use reqwest::Client;
 use serde_json::Value;
 use serial_test::serial;
@@ -210,4 +210,131 @@ async fn test_websocket_connection_without_joining_lobby_fails() {
         // The exact behavior depends on your topology implementation
         let _ = timeout.await;
     }
+}
+
+#[tokio::test]
+#[serial]
+async fn browser_sessions_use_matchbox_events_and_reject_old_admission() {
+    use futures_util::SinkExt;
+    use serde_json::json;
+    let addr = spawn_app().await;
+    let http = Client::new();
+    let a = authenticate_and_get_token(addr, "browser_a", "browser_a_password").await;
+    let b = authenticate_and_get_token(addr, "browser_b", "browser_b_password").await;
+    let lobby: Value = http
+        .post(format!("http://{addr}/browser/v1/lobbies"))
+        .bearer_auth(&a)
+        .json(&json!({"game_id":"standalone-game","compatibility_id":"build-1","capacity":2}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let base = format!(
+        "http://{addr}/browser/v1/lobbies/{}",
+        lobby["id"].as_str().unwrap()
+    );
+    let invite: Value = http
+        .post(format!("{base}/invitations"))
+        .bearer_auth(&a)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        http.post(format!("{base}/join"))
+            .bearer_auth(&b)
+            .json(
+                &json!({"compatibility_id":"build-1","invitation_token":invite["invitation_token"]})
+            )
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .as_u16(),
+        200
+    );
+    for token in [&a, &b] {
+        http.post(format!("{base}/ready"))
+            .bearer_auth(token)
+            .json(&json!({"ready":true,"compatibility_id":"build-1"}))
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap();
+    }
+    http.post(format!("{base}/start"))
+        .bearer_auth(&a)
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap();
+    // Identity JWTs cannot bypass session admission.
+    assert!(connect_async(format!("ws://{addr}/{a}")).await.is_err());
+    let mut tickets = Vec::new();
+    for token in [&a, &b] {
+        let c: Value = http
+            .get(format!("{base}/session"))
+            .bearer_auth(token)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        tickets.push(c["signaling_path"].as_str().unwrap().to_owned());
+    }
+    let (mut ws_a, _) = connect_async(format!("ws://{addr}/{}", tickets[0]))
+        .await
+        .unwrap();
+    let assigned_a: Value =
+        serde_json::from_str(ws_a.next().await.unwrap().unwrap().to_text().unwrap()).unwrap();
+    let (mut ws_b, _) = connect_async(format!("ws://{addr}/{}", tickets[1]))
+        .await
+        .unwrap();
+    let assigned_b: Value =
+        serde_json::from_str(ws_b.next().await.unwrap().unwrap().to_text().unwrap()).unwrap();
+    let new_peer: Value = serde_json::from_str(
+        tokio::time::timeout(Duration::from_secs(2), ws_a.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap()
+            .to_text()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(new_peer["NewPeer"], assigned_b["IdAssigned"]);
+    let signal = json!({"Signal":{"receiver":assigned_b["IdAssigned"],"data":{"fixture":"offer"}}});
+    ws_a.send(Message::Text(signal.to_string())).await.unwrap();
+    let received: Value = serde_json::from_str(
+        tokio::time::timeout(Duration::from_secs(2), ws_b.next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap()
+            .to_text()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(received["Signal"]["sender"], assigned_a["IdAssigned"]);
+    assert_eq!(received["Signal"]["data"]["fixture"], "offer");
+    // Ending a session invalidates its ticket even if the identity JWT is still valid.
+    http.delete(format!("{base}/session"))
+        .bearer_auth(&a)
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap();
+    assert!(connect_async(format!("ws://{addr}/{}", tickets[0]))
+        .await
+        .is_err());
+    let _ = ws_a.close(None).await;
+    let _ = ws_b.close(None).await;
 }

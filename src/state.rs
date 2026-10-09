@@ -285,6 +285,7 @@ impl LobbyManager {
 
 #[derive(Debug, Clone)]
 pub struct ServerState {
+    pub browser: Arc<std::sync::Mutex<crate::browser::BrowserState>>,
     pub lobby_manager: Arc<RwLock<LobbyManager>>,
     pub peers: StateObj<HashMap<PeerId, Peer>>,
     pub players_in_lobbies: Arc<RwLock<HashMap<String, Uuid>>>,
@@ -298,6 +299,7 @@ impl Default for ServerState {
     fn default() -> Self {
         let (tx, _) = broadcast::channel(100);
         Self {
+            browser: Default::default(),
             lobby_manager: Default::default(),
             peers: Default::default(),
             players_in_lobbies: Default::default(),

@@ -1,0 +1,7 @@
+{
+  "name": "allumette-webrtc-smoke",
+  "private": true,
+  "type": "module",
+  "scripts": { "test": "node run.mjs" },
+  "devDependencies": { "playwright-core": "1.64.0" }
+}

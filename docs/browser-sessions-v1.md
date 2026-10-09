@@ -3,6 +3,11 @@
 2026-10-09 · Base étudiée `b6d0178`. Les extensions ci-dessous sont un contrat de réalisation,
 à livrer de façon compatible avec les clients actuels. Allumette est indépendante de tout moteur.
 
+Mise à jour : une première implémentation opt-in existe dans `src/browser.rs`, sous
+`/browser/v1`. Le SDK sans dépendance moteur/UI est dans `packages/browser-client`
+(version 0.1.0). Les endpoints historiques restent disponibles. Voir la section
+« Implémentation actuelle » en fin de document pour les différences avec la cible.
+
 ## Responsabilités
 
 Allumette possède identités, salons, invitations, présence/readiness, sessions, signaling et
@@ -101,3 +106,40 @@ joins concurrents; invitation expirée/révoquée; incompatible refusé; readine
 tickets périmés; association des peers; suppression et double onglet; deux sessions successives;
 SSE EOF/reconnect; TURN relay forcé avec deux navigateurs sur réseaux distincts.
 Les tests de protocole utilisent des clients fixtures, sans dépendance à un moteur.
+
+## Implémentation actuelle — première tranche navigateur
+
+Les salons `/browser/v1` sont toujours privés et séparés des salons historiques.
+Une identité ne peut appartenir simultanément à un salon historique et navigateur.
+Les capacity acceptées sont 2 et 4; tous les membres doivent être prêts avant start.
+Le DTO utilise `player_id` pour les membres et `peer_id` dans le contexte de session.
+Les joins concurrents sont sérialisés par un verrou unique sur cet état.
+
+Une nouvelle invitation remplace la précédente; durée 15 minutes. Les invitations
+sont stockées sous SHA-256 et ne sont pas présentes dans les DTO. Le frontend construit
+son lien. Une session expire après 30 minutes, avec 120 secondes pour le signaling
+initial (les builds navigateur actuels sont volumineux). Une session a son propre UUID.
+Le contexte expose `signaling_path`; le SDK le résout depuis son origine explicite
+et ajoute `signaling_url` et `ice_servers` via `/ice-servers`. Le ticket HS256 porte
+l’audience `allumette-browser-signaling` et expire à 60 secondes. Les endpoints
+HTTP ne l’acceptent pas comme JWT d’identité. Le signaling garde le format Matchbox.
+
+`InProgress` indique que les sockets de signaling attendus ont été attribués;
+le jeu hôte doit vérifier séparément WebRTC et le démarrage de sa simulation.
+Le dernier socket fermé ramène au salon et annule readiness. `DELETE /session`
+permet à un membre de terminer la session pour tous. Quitter un salon en cours
+termine également la session; propriétaire parti ⇒ salon supprimé.
+Le serveur ne reçoit ni seed, ni paramètres de simulation, ni assets.
+
+Le nouveau SDK utilise un guest éphémère WebCrypto Ed25519 et un polling contrôlé
+par l’hôte. Il ne persiste ni JWT ni clé privée. Le SSE existant appartient au SDK
+historique : le nouveau contrat ne dépend pas de ce stream. Les salons disparaissent
+après 15 minutes d’inactivité en Waiting ou au redémarrage du processus.
+
+Tests : compatibilité, readiness, capacité avec joins concurrents, rotation/expiration
+d’invitations, tickets et sessions périmées, isolation multijeu et messages Matchbox.
+La validation TURN sur réseaux distincts reste un critère de livraison.
+`ALLOWED_ORIGINS` configure une liste explicite d’origines CORS; le VPS de recette
+l’utilise. Sans cette variable, le comportement historique permissif est conservé
+pour compatibilité. Ne pas confondre les allocations TURN vérifiées avec une
+preuve de data channel ou une ouverture publique.

@@ -1,0 +1,1 @@
+{"name":"@bascanada/allumette-browser","version":"0.1.0","type":"module","exports":{".":{"types":"./index.d.ts","default":"./index.js"}},"files":["index.js","index.d.ts","README.md"],"scripts":{"test":"node --test"},"license":"Apache-2.0"}

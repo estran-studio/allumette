@@ -1,3 +1,4 @@
+pub mod browser;
 pub mod args;
 pub mod auth;
 pub mod helpers;
@@ -22,7 +23,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::{convert::Infallible, net::SocketAddr};
 use tokio_stream::{StreamExt as _, wrappers::BroadcastStream};
-use tower_http::cors::CorsLayer;
+use tower_http::cors::{CorsLayer, AllowOrigin};
 use tracing::info;
 use tracing_subscriber::prelude::*;
 
@@ -80,6 +81,13 @@ pub async fn run(addr: SocketAddr) -> Result<(), Box<dyn std::error::Error>> {
         stun_url,
     };
     let app_router = app(app_state);
+    let cors = if let Ok(origins) = std::env::var("ALLOWED_ORIGINS") {
+        let origins = origins.split(',').map(|origin|origin.trim().parse::<axum::http::HeaderValue>()).collect::<Result<Vec<_>,_>>()?;
+        if origins.is_empty() || origins.iter().any(|o|o == "*") { return Err("Explicit ALLOWED_ORIGINS required".into()); }
+        CorsLayer::new().allow_origin(AllowOrigin::list(origins))
+            .allow_methods([axum::http::Method::GET,axum::http::Method::POST,axum::http::Method::DELETE,axum::http::Method::OPTIONS])
+            .allow_headers([axum::http::header::AUTHORIZATION,axum::http::header::CONTENT_TYPE])
+    } else { CorsLayer::very_permissive() };
 
     let challenge_manager = state.challenge_manager.clone();
     tokio::spawn(async move {
@@ -93,9 +101,11 @@ pub async fn run(addr: SocketAddr) -> Result<(), Box<dyn std::error::Error>> {
     // Lobby inactivity cleanup task - runs every 60 seconds
     let lobby_cleanup_state = state.clone();
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
         loop {
             interval.tick().await;
+            let stale = { let mut b = lobby_cleanup_state.browser.lock().unwrap(); b.prune(); std::mem::take(&mut b.closing) };
+            for peer in stale { let _ = lobby_cleanup_state.try_send(peer, axum::extract::ws::Message::Close(None)); }
             let expired = {
                 let mut lobby_manager = lobby_cleanup_state.lobby_manager.write().unwrap();
                 lobby_manager.cleanup_inactive_lobbies()
@@ -123,7 +133,7 @@ pub async fn run(addr: SocketAddr) -> Result<(), Box<dyn std::error::Error>> {
             let state = state.clone();
             let secret = AuthSecret(secret);
             move |connection| {
-                tracing::info!(origin = ?connection.origin, path = ?connection.path, "WebSocket connection attempt");
+                tracing::info!(origin = ?connection.origin, "WebSocket connection attempt");
                 // Extract token from path (allumette stores path without leading /)
                 let token = connection
                     .path
@@ -134,6 +144,11 @@ pub async fn run(addr: SocketAddr) -> Result<(), Box<dyn std::error::Error>> {
                         (StatusCode::UNAUTHORIZED, "Missing token in path").into_response()
                     })?;
 
+                if let Ok(ticket) = browser::decode_ticket(token, &secret) {
+                    state.browser.lock().unwrap().reserve(connection.origin, &ticket)
+                        .map_err(IntoResponse::into_response)?;
+                    return Ok(true);
+                }
                 let claims = decode::<auth::Claims>(
                     token,
                     &DecodingKey::from_secret(secret.0.as_ref()),
@@ -147,6 +162,9 @@ pub async fn run(addr: SocketAddr) -> Result<(), Box<dyn std::error::Error>> {
 
                 tracing::info!(origin = ?connection.origin, pubkey = %&claims.sub[..8], "WebSocket connection request: player connected");
 
+                if state.browser.lock().unwrap().contains_player(&claims.sub) {
+                    return Err((StatusCode::FORBIDDEN, "Session ticket required").into_response());
+                }
                 let mut waiting_players = state.waiting_players.write().unwrap();
                 waiting_players.insert(connection.origin, claims.sub);
 
@@ -159,6 +177,7 @@ pub async fn run(addr: SocketAddr) -> Result<(), Box<dyn std::error::Error>> {
         .on_id_assignment({
             let state = state.clone();
             move |(origin, peer_id)| {
+                if state.browser.lock().unwrap().assign(origin, peer_id) { return; }
                 let mut waiting_players = state.waiting_players.write().unwrap();
                 if let Some(player_id) = waiting_players.remove(&origin) {
                     let mut players_to_peers = state.players_to_peers.write().unwrap();
@@ -169,14 +188,13 @@ pub async fn run(addr: SocketAddr) -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         })
-        .trace()
         .mutate_router(|router| {
             // Merge app router and apply CORS to the *entire* router (including signaling routes).
             // This prevents duplicate CORS headers and ensures consistent behavior.
             // TODO: Restrict CORS for production environments
             router
                 .merge(app_router)
-                .layer(CorsLayer::very_permissive())
+                .layer(cors)
         })
         .build();
 
@@ -186,7 +204,7 @@ pub async fn run(addr: SocketAddr) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn app(state: AppState) -> Router {
-    Router::new()
+    Router::new().merge(browser::router())
         .route("/health", get(health_handler))
         .route("/auth/challenge", post(challenge_handler))
         .route("/auth/login", post(login_handler))
@@ -522,6 +540,9 @@ async fn create_lobby_handler(
     claims: auth::Claims,
     Json(payload): Json<CreateLobbyRequest>,
 ) -> impl IntoResponse {
+    if state.state.browser.lock().unwrap().contains_player(&claims.sub) {
+        return add_no_cache_headers((StatusCode::CONFLICT, "Already in a browser lobby").into_response());
+    }
     // Check if player is already in a lobby
     let players_in_lobbies = state.state.players_in_lobbies.read().unwrap();
     if let Some(existing_lobby_id) = players_in_lobbies.get(&claims.sub) {
@@ -648,6 +669,9 @@ async fn join_lobby_handler(
     Path(lobby_id): Path<uuid::Uuid>,
     claims: auth::Claims,
 ) -> impl IntoResponse {
+    if state.state.browser.lock().unwrap().contains_player(&claims.sub) {
+        return add_no_cache_headers((StatusCode::CONFLICT, "Already in a browser lobby").into_response());
+    }
     // Check if player is already in a lobby
     let players_in_lobbies = state.state.players_in_lobbies.read().unwrap();
     if let Some(existing_lobby_id) = players_in_lobbies.get(&claims.sub) {

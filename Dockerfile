@@ -12,9 +12,10 @@ WORKDIR /usr/src/allumette_server/
 
 COPY README.md /usr/src/README.md
 COPY ./Cargo.toml /usr/src/allumette_server/Cargo.toml
+COPY ./Cargo.lock /usr/src/allumette_server/Cargo.lock
 COPY ./src /usr/src/allumette_server/src
 
-RUN cargo build --release
+RUN cargo build --release --locked -j 2
 
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y libssl3 && rm -rf /var/lib/apt/lists/*
