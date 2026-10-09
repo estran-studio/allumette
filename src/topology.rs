@@ -127,6 +127,10 @@ impl SignalingTopology<NoCallbacks, ServerState> for MatchmakingDemoTopology {
 
             match request {
                 PeerRequest::Signal { receiver, data } => {
+                    if !state.may_signal(peer_id, receiver) {
+                        warn!(sender = ?peer_id, receiver = ?receiver, "Rejected signal outside lobby");
+                        continue;
+                    }
                     let event = Message::Text(
                         JsonPeerEvent::Signal {
                             sender: peer_id,

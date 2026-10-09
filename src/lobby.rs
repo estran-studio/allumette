@@ -66,7 +66,7 @@ impl Lobby {
         // Only show full player public keys if the requester is in the lobby
         let is_in_lobby = player_pubkey.map_or(false, |pk| self.players.contains(pk));
         
-        let players = if is_in_lobby {
+        let mut players: Vec<PlayerInfo> = if is_in_lobby {
             // If player is in the lobby, show all player public keys with is_you marker
             self.players
                 .iter()
@@ -79,6 +79,7 @@ impl Lobby {
             // If player is not in the lobby, don't expose public keys - just show count as empty array
             vec![]
         };
+        players.sort_by(|a, b| a.public_key.cmp(&b.public_key));
         LobbyResponse {
             id: self.id,
             game_id: self.game_id.clone(),

@@ -715,13 +715,19 @@ async function connectLobbyStreamWithFetch(token) {
             throw new Error('Readable stream not available');
         }
 
+        // SSE only broadcasts changes, so restore a snapshot on every connection.
+        await getLobbies();
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
         let buffer = '';
 
         while (true) {
             const { done, value } = await reader.read();
-            if (done) break;
+            if (done) {
+                // A normal EOF also means the stream was lost. Resynchronize on reconnect.
+                if (!controller.signal.aborted) throw new Error('Lobby stream ended');
+                break;
+            }
             buffer += decoder.decode(value, { stream: true });
 
             // Parse complete SSE events separated by a blank line (\n\n or \r\n\r\n)

@@ -312,6 +312,25 @@ impl Default for ServerState {
 impl SignalingState for ServerState {}
 
 impl ServerState {
+    /// Signaling is only valid between currently connected members of the same lobby.
+    /// Keep this protocol boundary independent of the game implementation.
+    pub fn may_signal(&self, sender: PeerId, receiver: PeerId) -> bool {
+        let (sender_player, receiver_player) = {
+            let peers = self.players_to_peers.read().unwrap();
+            let sender_player = peers.iter().find(|(_, peer)| **peer == sender).map(|(player, _)| player.clone());
+            let receiver_player = peers.iter().find(|(_, peer)| **peer == receiver).map(|(player, _)| player.clone());
+            (sender_player, receiver_player)
+        };
+        let (Some(sender_player), Some(receiver_player)) = (sender_player, receiver_player) else { return false; };
+        let (sender_lobby, receiver_lobby) = {
+            let membership = self.players_in_lobbies.read().unwrap();
+            (membership.get(&sender_player).copied(), membership.get(&receiver_player).copied())
+        };
+        let (Some(sender_lobby), Some(receiver_lobby)) = (sender_lobby, receiver_lobby) else { return false; };
+        sender_lobby == receiver_lobby && self.lobby_manager.read().unwrap().get_lobby(&sender_lobby)
+            .is_some_and(|lobby| lobby.players.contains(&sender_player) && lobby.players.contains(&receiver_player))
+    }
+
     pub fn add_peer(&mut self, peer: Peer) {
         self.peers.lock().unwrap().insert(peer.id, peer);
     }
