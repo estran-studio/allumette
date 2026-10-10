@@ -1,4 +1,6 @@
 PROFILE ?= dev
+IMAGE_REPO ?= ghcr.io/estran-studio/allumette-server
+IMAGE_TAG ?= latest
 
 CURRENT_TAG := $(shell git describe --tags --exact-match HEAD 2>/dev/null)
 
@@ -53,12 +55,14 @@ run:
 	APP_VERSION=$(VERSION) JWT_SECRET=secret cargo run
 
 build_docker_allumette_server:
-	docker build -f ./Dockerfile ./ -t ghcr.io/bascanada/matchbox_server:latest
+	docker build -f ./Dockerfile ./ \
+		--label org.opencontainers.image.source=https://github.com/estran-studio/allumette \
+		-t $(IMAGE_REPO):$(IMAGE_TAG)
 
 
 # Publish
 push_docker_allumette_server:
-	docker push ghcr.io/bascanada/matchbox_server:latest
+	docker push $(IMAGE_REPO):$(IMAGE_TAG)
 
 print_version:
 	@echo "Current Tag: $(CURRENT_TAG)"
