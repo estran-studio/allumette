@@ -12,11 +12,13 @@ env:
 
 permissions:
   contents: read
-  packages: write
 
 jobs:
   build_and_test:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     steps:
       - name: Check out
         uses: actions/checkout@v4
@@ -52,6 +54,9 @@ jobs:
   deploy:
     needs: build_and_test
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
     steps:
       - name: Deploy to VPS
         uses: appleboy/ssh-action@v1.0.3
@@ -59,9 +64,13 @@ jobs:
           host: ${{ secrets.VPS_HOST }}
           username: ${{ secrets.VPS_USER }}
           key: ${{ secrets.VPS_SSH_KEY }}
-          envs: IMAGE_TAG
+          envs: IMAGE_TAG,GHCR_USER,GHCR_TOKEN
           script: |
-            sudo env IMAGE_TAG="$IMAGE_TAG" sh -eu -c '
+            sudo env IMAGE_TAG="$IMAGE_TAG" GHCR_USER="$GHCR_USER" GHCR_TOKEN="$GHCR_TOKEN" sh -eu -c '
+              DOCKER_CONFIG=$(mktemp -d)
+              export DOCKER_CONFIG
+              trap "docker logout ghcr.io >/dev/null 2>&1 || true; rm -rf $DOCKER_CONFIG" EXIT
+              printf "%s" "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
               cd /opt/allumette
               test -f compose.yaml
               test -f .env
@@ -75,3 +84,5 @@ jobs:
             curl --fail --silent --show-error https://allumette.estran.studio/health
         env:
           IMAGE_TAG: ${{ github.sha }}
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ github.token }}
