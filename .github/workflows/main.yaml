@@ -61,15 +61,16 @@ jobs:
           key: ${{ secrets.VPS_SSH_KEY }}
           envs: IMAGE_TAG
           script: |
-            set -eu
-            cd /opt/allumette
-            test -f compose.yaml
-            test -f .env
-            sudo sed -i "s|^ALLUMETTE_IMAGE=.*|ALLUMETTE_IMAGE=ghcr.io/estran-studio/allumette-server:${IMAGE_TAG}|" .env
-            sudo docker compose config -q
-            sudo docker compose pull allumette
-            sudo docker compose up -d --no-deps allumette
-            sudo docker compose ps allumette
+            sudo env IMAGE_TAG="$IMAGE_TAG" sh -eu -c '
+              cd /opt/allumette
+              test -f compose.yaml
+              test -f .env
+              sed -i "s|^ALLUMETTE_IMAGE=.*|ALLUMETTE_IMAGE=ghcr.io/estran-studio/allumette-server:${IMAGE_TAG}|" .env
+              docker compose config -q
+              docker compose pull allumette
+              docker compose up -d --no-deps allumette
+              docker compose ps allumette
+            '
             sleep 3
             curl --fail --silent --show-error https://allumette.estran.studio/health
         env:
